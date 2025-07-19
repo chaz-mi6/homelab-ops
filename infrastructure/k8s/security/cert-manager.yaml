@@ -1,0 +1,73 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: cert-manager
+    repoURL: https://charts.jetstack.io
+    targetRevision: v1.13.3
+    helm:
+      releaseName: cert-manager
+      values: |
+        installCRDs: true
+        replicaCount: 2
+        
+        # Enable leader election for HA
+        extraArgs:
+          - --leader-elect=true
+          - --leader-election-lease-duration=60s
+          - --leader-election-renew-deadline=40s
+          - --leader-election-retry-period=15s
+        
+        # Webhook configuration
+        webhook:
+          replicaCount: 2
+          timeoutSeconds: 30
+          
+        # CA Injector for webhook certificates  
+        cainjector:
+          replicaCount: 2
+          
+        # Prometheus monitoring
+        prometheus:
+          enabled: true
+          servicemonitor:
+            enabled: true
+            namespace: monitoring
+            
+        # Resource limits
+        resources:
+          limits:
+            cpu: 100m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+            
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          fsGroup: 1000
+          
+        # Node selector for dedicated nodes if needed
+        # nodeSelector:
+        #   node-role.kubernetes.io/worker: "true"
+          
+        # Pod disruption budget
+        podDisruptionBudget:
+          enabled: true
+          minAvailable: 1
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

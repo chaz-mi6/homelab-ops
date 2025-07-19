@@ -1,0 +1,110 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: linkerd-viz
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: linkerd-viz
+    repoURL: https://linkerd.github.io/linkerd2
+    targetRevision: 30.12.4
+    helm:
+      releaseName: linkerd-viz
+      values: |
+        # Linkerd viz extension configuration
+        linkerdNamespace: linkerd
+        
+        # Dashboard configuration
+        dashboard:
+          replicas: 2
+          
+        # Web dashboard ingress
+        ingress:
+          enabled: true
+          className: traefik
+          annotations:
+            traefik.ingress.kubernetes.io/router.entrypoints: websecure
+            traefik.ingress.kubernetes.io/router.tls: "true"
+            cert-manager.io/cluster-issuer: letsencrypt-prod
+            # Basic auth for dashboard access
+            traefik.ingress.kubernetes.io/router.middlewares: linkerd-viz-auth@kubernetescrd
+          hosts:
+            - linkerd.homelab.local
+          tls:
+            - secretName: linkerd-viz-tls
+              hosts:
+                - linkerd.homelab.local
+                
+        # Grafana configuration
+        grafana:
+          enabled: true
+          name: grafana
+          
+        # Prometheus configuration
+        prometheus:
+          enabled: true
+          name: prometheus
+          
+        # Jaeger integration
+        jaeger:
+          enabled: true
+          
+        # Metrics API
+        metricsAPI:
+          replicas: 2
+          
+        # Prometheus scrape configuration
+        prometheusUrl: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        
+        # Tap configuration
+        tap:
+          replicas: 2
+          externalSecret: true
+          caBundle: ""
+          crtPEM: ""
+          keyPEM: ""
+          
+        # Top configuration  
+        tapInjector:
+          externalSecret: true
+          caBundle: ""
+          crtPEM: ""
+          keyPEM: ""
+          
+        # Node selection
+        nodeSelector:
+          kubernetes.io/os: linux
+          
+        # Enable pod disruption budget
+        enablePodDisruptionBudget: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: linkerd-viz
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# Basic auth middleware for Linkerd dashboard
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: linkerd-viz-auth
+  namespace: linkerd-viz
+spec:
+  basicAuth:
+    secret: linkerd-auth-secret
+---
+# Auth secret for Linkerd dashboard
+apiVersion: v1
+kind: Secret
+metadata:
+  name: linkerd-auth-secret
+  namespace: linkerd-viz
+type: Opaque
+data:
+  users: YWRtaW46JGFwcjEkSDZSaWZ5RTgkUWVKb0JsaFZLLkluaGJuMXZMcHJOMAo=  # admin:admin

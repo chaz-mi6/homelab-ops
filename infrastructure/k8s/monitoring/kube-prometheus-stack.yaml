@@ -1,0 +1,258 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: kube-prometheus-stack
+    repoURL: https://prometheus-community.github.io/helm-charts
+    targetRevision: 55.5.0
+    helm:
+      releaseName: kube-prometheus-stack
+      values: |
+        # Global configuration
+        fullnameOverride: prometheus
+        
+        # Alertmanager configuration
+        alertmanager:
+          enabled: true
+          alertmanagerSpec:
+            replicas: 2
+            retention: 168h
+            storage:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: local-path
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 10Gi
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "200m"
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65534
+              fsGroup: 65534
+          ingress:
+            enabled: true
+            ingressClassName: traefik
+            annotations:
+              traefik.ingress.kubernetes.io/router.entrypoints: websecure
+              traefik.ingress.kubernetes.io/router.tls: "true"
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+            hosts:
+              - alertmanager.homelab.local
+            tls:
+              - secretName: alertmanager-tls
+                hosts:
+                  - alertmanager.homelab.local
+                  
+        # Prometheus configuration
+        prometheus:
+          enabled: true
+          prometheusSpec:
+            replicas: 2
+            replicaExternalLabelName: "replica"
+            prometheusExternalLabelName: "prometheus"
+            retention: 30d
+            retentionSize: "50GiB"
+            walCompression: true
+            
+            # Storage configuration
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: local-path
+                  accessModes: ["ReadWriteOnce"]
+                  resources:
+                    requests:
+                      storage: 100Gi
+                      
+            # Resource limits
+            resources:
+              requests:
+                memory: "2Gi"
+                cpu: "500m"
+              limits:
+                memory: "4Gi"
+                cpu: "1"
+                
+            # Security context
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65534
+              fsGroup: 65534
+              
+            # Additional scrape configs
+            additionalScrapeConfigs: []
+            
+            # Service monitoring
+            serviceMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            ruleSelectorNilUsesHelmValues: false
+            
+            # Remote write configuration for long-term storage
+            remoteWrite:
+              - url: http://thanos-receive.monitoring.svc.cluster.local:19291/api/v1/receive
+                writeRelabelConfigs:
+                  - sourceLabels: [__name__]
+                    regex: 'prometheus_tsdb_.*|prometheus_config_.*|prometheus_rule_.*'
+                    action: drop
+                    
+            # External labels for federation
+            externalLabels:
+              cluster: homelab
+              environment: production
+              
+          ingress:
+            enabled: true
+            ingressClassName: traefik
+            annotations:
+              traefik.ingress.kubernetes.io/router.entrypoints: websecure
+              traefik.ingress.kubernetes.io/router.tls: "true"
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+            hosts:
+              - prometheus.homelab.local
+            tls:
+              - secretName: prometheus-tls
+                hosts:
+                  - prometheus.homelab.local
+                  
+        # Grafana configuration (will be overridden by separate Grafana deployment)
+        grafana:
+          enabled: false
+          
+        # Node Exporter
+        nodeExporter:
+          enabled: true
+          
+        # kube-state-metrics
+        kubeStateMetrics:
+          enabled: true
+          
+        # Prometheus Operator
+        prometheusOperator:
+          enabled: true
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            fsGroup: 65534
+            
+        # Default rules
+        defaultRules:
+          create: true
+          rules:
+            alertmanager: true
+            etcd: true
+            configReloaders: true
+            general: true
+            k8s: true
+            kubeApiserver: true
+            kubeApiserverAvailability: true
+            kubeApiserverBurnrate: true
+            kubeApiserverHistogram: true
+            kubeApiserverSlos: true
+            kubelet: true
+            kubeProxy: true
+            kubePrometheusGeneral: true
+            kubePrometheusNodeRecording: true
+            kubernetesApps: true
+            kubernetesResources: true
+            kubernetesStorage: true
+            kubernetesSystem: true
+            kubeScheduler: true
+            kubeStateMetrics: true
+            network: true
+            node: true
+            nodeExporterAlerting: true
+            nodeExporterRecording: true
+            prometheus: true
+            prometheusOperator: true
+            
+        # Custom ServiceMonitor for additional services
+        additionalServiceMonitors:
+          - name: traefik
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: traefik
+            endpoints:
+              - port: metrics
+                interval: 30s
+                path: /metrics
+          - name: argocd-metrics
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: argocd-metrics
+            endpoints:
+              - port: metrics
+                interval: 30s
+                path: /metrics
+          - name: vault
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: vault
+            endpoints:
+              - port: http
+                interval: 30s
+                path: /v1/sys/metrics?format=prometheus
+                
+        # Custom PrometheusRule for additional alerting rules
+        additionalPrometheusRulesMap:
+          homelab-custom:
+            groups:
+              - name: homelab.rules
+                rules:
+                - alert: HighMemoryUsage
+                  expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.9
+                  for: 5m
+                  labels:
+                    severity: warning
+                    team: infrastructure
+                  annotations:
+                    summary: "High memory usage detected"
+                    description: "Memory usage is above 90% on {{ $labels.instance }}"
+                    
+                - alert: DiskSpaceUsage
+                  expr: (node_filesystem_size_bytes{mountpoint="/"} - node_filesystem_free_bytes{mountpoint="/"}) / node_filesystem_size_bytes{mountpoint="/"} > 0.8
+                  for: 5m
+                  labels:
+                    severity: warning
+                    team: infrastructure
+                  annotations:
+                    summary: "Disk space usage high"
+                    description: "Disk usage is above 80% on {{ $labels.instance }}"
+                    
+                - alert: PodCrashLooping
+                  expr: increase(kube_pod_container_status_restarts_total[1h]) > 5
+                  for: 5m
+                  labels:
+                    severity: critical
+                    team: platform
+                  annotations:
+                    summary: "Pod is crash looping"
+                    description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

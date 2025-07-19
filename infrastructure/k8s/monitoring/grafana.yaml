@@ -1,0 +1,310 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: grafana
+    repoURL: https://grafana.github.io/helm-charts
+    targetRevision: 7.0.19
+    helm:
+      releaseName: grafana
+      values: |
+        # Replica configuration
+        replicas: 1
+        
+        # Admin credentials from External Secrets
+        admin:
+          existingSecret: grafana-admin-secret
+          userKey: admin-user
+          passwordKey: admin-password
+          
+        # Persistence
+        persistence:
+          type: pvc
+          enabled: true
+          storageClassName: local-path
+          accessModes:
+            - ReadWriteOnce
+          size: 10Gi
+          finalizers:
+            - kubernetes.io/pvc-protection
+            
+        # Ingress
+        ingress:
+          enabled: true
+          ingressClassName: traefik
+          annotations:
+            traefik.ingress.kubernetes.io/router.entrypoints: websecure
+            traefik.ingress.kubernetes.io/router.tls: "true"
+            cert-manager.io/cluster-issuer: letsencrypt-prod
+          hosts:
+            - grafana.homelab.local
+          tls:
+            - secretName: grafana-tls
+              hosts:
+                - grafana.homelab.local
+                
+        # Resources
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+            
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 472
+          fsGroup: 472
+          
+        # Service account
+        serviceAccount:
+          create: true
+          autoMount: true
+          
+        # Grafana configuration
+        grafana.ini:
+          server:
+            protocol: http
+            http_port: 3000
+            domain: grafana.homelab.local
+            root_url: https://grafana.homelab.local
+            enforce_domain: false
+            enable_gzip: true
+            
+          security:
+            admin_user: admin
+            admin_password: $__file{/etc/secrets/admin_password}
+            allow_embedding: false
+            cookie_secure: true
+            cookie_samesite: lax
+            
+          auth:
+            login_remember_days: 7
+            login_maximum_inactive_lifetime_days: 7
+            disable_login_form: false
+            oauth_auto_login: false
+            
+          # OIDC configuration for Vault integration
+          auth.generic_oauth:
+            enabled: true
+            name: Vault OIDC
+            allow_sign_up: true
+            client_id: grafana
+            client_secret: $__file{/etc/secrets/oidc_client_secret}
+            scopes: openid profile email groups
+            auth_url: https://vault.homelab.local/ui/vault/identity/oidc/provider/homelab/authorize
+            token_url: https://vault.homelab.local/v1/identity/oidc/provider/homelab/token
+            api_url: https://vault.homelab.local/v1/identity/oidc/provider/homelab/userinfo
+            role_attribute_path: contains(groups[*], 'grafana-admin') && 'Admin' || contains(groups[*], 'grafana-editor') && 'Editor' || 'Viewer'
+            allow_assign_grafana_admin: true
+            
+          users:
+            allow_sign_up: false
+            auto_assign_org: true
+            auto_assign_org_id: 1
+            auto_assign_org_role: Viewer
+            viewers_can_edit: false
+            editors_can_admin: false
+            
+          smtp:
+            enabled: true
+            host: smtp.homelab.local:587
+            user: grafana@homelab.local
+            password: $__file{/etc/secrets/smtp_password}
+            from_address: grafana@homelab.local
+            from_name: Grafana
+            skip_verify: false
+            
+          log:
+            mode: console
+            level: info
+            
+          metrics:
+            enabled: true
+            
+        # Data sources
+        datasources:
+          datasources.yaml:
+            apiVersion: 1
+            datasources:
+            - name: Prometheus
+              type: prometheus
+              access: proxy
+              url: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+              isDefault: true
+              editable: false
+              jsonData:
+                timeInterval: 30s
+                queryTimeout: 60s
+                httpMethod: POST
+                
+            - name: Thanos Query
+              type: prometheus
+              access: proxy
+              url: http://thanos-query.monitoring.svc.cluster.local:9090
+              editable: false
+              jsonData:
+                timeInterval: 30s
+                queryTimeout: 60s
+                httpMethod: POST
+                
+            - name: Loki
+              type: loki
+              access: proxy
+              url: http://loki-gateway.logging.svc.cluster.local
+              editable: false
+              jsonData:
+                timeout: 60
+                maxLines: 1000
+                
+            - name: AlertManager
+              type: alertmanager
+              access: proxy
+              url: http://prometheus-kube-prometheus-alertmanager.monitoring.svc.cluster.local:9093
+              editable: false
+              jsonData:
+                implementation: prometheus
+                
+        # Dashboard providers
+        dashboardProviders:
+          dashboardproviders.yaml:
+            apiVersion: 1
+            providers:
+            - name: 'default'
+              orgId: 1
+              folder: ''
+              type: file
+              disableDeletion: false
+              editable: true
+              options:
+                path: /var/lib/grafana/dashboards/default
+                
+            - name: 'kubernetes'
+              orgId: 1
+              folder: 'Kubernetes'
+              type: file
+              disableDeletion: false
+              editable: true
+              options:
+                path: /var/lib/grafana/dashboards/kubernetes
+                
+            - name: 'infrastructure'
+              orgId: 1
+              folder: 'Infrastructure'
+              type: file
+              disableDeletion: false
+              editable: true
+              options:
+                path: /var/lib/grafana/dashboards/infrastructure
+                
+        # Dashboards
+        dashboards:
+          default:
+            prometheus-stats:
+              gnetId: 2
+              revision: 2
+              datasource: Prometheus
+              
+          kubernetes:
+            kubernetes-cluster-monitoring:
+              gnetId: 7249
+              revision: 1
+              datasource: Prometheus
+            kubernetes-pod-monitoring:
+              gnetId: 6417
+              revision: 1
+              datasource: Prometheus
+            kubernetes-deployment-statefulset-daemonset-metrics:
+              gnetId: 8588
+              revision: 1
+              datasource: Prometheus
+              
+          infrastructure:
+            node-exporter:
+              gnetId: 1860
+              revision: 27
+              datasource: Prometheus
+            traefik:
+              gnetId: 17346
+              revision: 1
+              datasource: Prometheus
+            argocd:
+              gnetId: 14584
+              revision: 1
+              datasource: Prometheus
+              
+        # Plugins
+        plugins:
+          - grafana-piechart-panel
+          - grafana-worldmap-panel
+          - grafana-clock-panel
+          - grafana-simple-json-datasource
+          - camptocamp-prometheus-alertmanager-datasource
+          
+        # Extra secrets
+        extraSecretMounts:
+          - name: auth-oidc-secret
+            secretName: grafana-auth-secret
+            defaultMode: 0440
+            mountPath: /etc/secrets
+            readOnly: true
+            
+        # Service monitor
+        serviceMonitor:
+          enabled: true
+          namespace: monitoring
+          labels:
+            release: kube-prometheus-stack
+          interval: 30s
+          scrapeTimeout: 10s
+          path: /metrics
+          
+        # Sidecar for dynamic dashboard loading
+        sidecar:
+          dashboards:
+            enabled: true
+            label: grafana_dashboard
+            labelValue: "1"
+            folder: /tmp/dashboards
+            folderAnnotation: grafana_folder
+            provider:
+              foldersFromFilesStructure: true
+          datasources:
+            enabled: true
+            label: grafana_datasource
+            labelValue: "1"
+            
+        # Image renderer for PDF/PNG exports
+        imageRenderer:
+          enabled: true
+          replicas: 1
+          image:
+            repository: grafana/grafana-image-renderer
+            tag: 3.6.1
+          resources:
+            requests:
+              memory: "100Mi"
+              cpu: "50m"
+            limits:
+              memory: "200Mi"
+              cpu: "100m"
+              
+        # Test framework
+        testFramework:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

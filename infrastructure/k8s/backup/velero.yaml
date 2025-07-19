@@ -1,0 +1,187 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: velero
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: velero
+    repoURL: https://vmware-tanzu.github.io/helm-charts
+    targetRevision: 5.2.0
+    helm:
+      releaseName: velero
+      values: |
+        # Image configuration
+        image:
+          repository: velero/velero
+          tag: v1.12.2
+          
+        # Configuration
+        configuration:
+          backupStorageLocation:
+          - name: default
+            provider: aws
+            bucket: homelab-velero-backups
+            config:
+              region: us-east-1
+              s3ForcePathStyle: "true"
+              s3Url: http://minio.backup.svc.cluster.local:9000
+              publicUrl: https://minio.homelab.local
+          volumeSnapshotLocation:
+          - name: default
+            provider: csi
+            config:
+              region: us-east-1
+          # Backup retention
+          backupRetentionPeriod: 168h  # 7 days
+          # Enable CSI snapshot support
+          features: EnableCSI
+          
+        # Credentials for S3-compatible storage (Minio)
+        credentials:
+          existingSecret: velero-credentials
+          
+        # Deployment configuration
+        deployRestic: false  # Use node-agent instead
+        deployNodeAgent: true
+        
+        # Resource configuration
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+            
+        # Node agent configuration
+        nodeAgent:
+          podVolumePath: /var/lib/kubelet/pods
+          privileged: false
+          resources:
+            requests:
+              memory: "200Mi"
+              cpu: "100m"
+            limits:
+              memory: "500Mi"
+              cpu: "200m"
+              
+        # Metrics and monitoring
+        metrics:
+          enabled: true
+          scrapeInterval: 30s
+          scrapeTimeout: 10s
+          service:
+            labels:
+              release: kube-prometheus-stack
+              
+        serviceMonitor:
+          enabled: true
+          additionalLabels:
+            release: kube-prometheus-stack
+            
+        # RBAC
+        rbac:
+          create: true
+          clusterAdministrator: true
+          
+        # Service account
+        serviceAccount:
+          server:
+            create: true
+            name: velero
+            annotations:
+              eks.amazonaws.com/role-arn: ""
+              
+        # Security context
+        securityContext:
+          fsGroup: 65534
+          runAsUser: 65534
+          runAsGroup: 65534
+          runAsNonRoot: true
+          
+        podSecurityContext:
+          fsGroup: 65534
+          runAsUser: 65534
+          runAsGroup: 65534
+          runAsNonRoot: true
+          
+        # Init containers
+        initContainers:
+          - name: velero-plugin-for-aws
+            image: velero/velero-plugin-for-aws:v1.8.2
+            imagePullPolicy: IfNotPresent
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+          - name: velero-plugin-for-csi
+            image: velero/velero-plugin-for-csi:v0.6.2
+            imagePullPolicy: IfNotPresent
+            volumeMounts:
+              - mountPath: /target
+                name: plugins
+                
+        # Schedule backups
+        schedules:
+          daily-backup:
+            disabled: false
+            schedule: "0 1 * * *"  # Daily at 1 AM
+            useOwnerReferencesInBackup: false
+            template:
+              includedNamespaces:
+              - argocd
+              - monitoring
+              - logging
+              - linkerd
+              - linkerd-viz
+              - cert-manager
+              - traefik
+              - external-secrets
+              includedResources:
+              - secrets
+              - configmaps
+              - persistentvolumes
+              - persistentvolumeclaims
+              excludedResources:
+              - events
+              - events.events.k8s.io
+              - backups.velero.io
+              - restores.velero.io
+              - resticrepositories.velero.io
+              snapshotVolumes: true
+              includeClusterResources: true
+              ttl: 168h0m0s  # 7 days
+              
+          weekly-backup:
+            disabled: false
+            schedule: "0 2 * * 0"  # Weekly on Sunday at 2 AM
+            useOwnerReferencesInBackup: false
+            template:
+              includedNamespaces: []  # All namespaces
+              excludedResources:
+              - events
+              - events.events.k8s.io
+              - backups.velero.io
+              - restores.velero.io
+              - resticrepositories.velero.io
+              snapshotVolumes: true
+              includeClusterResources: true
+              ttl: 720h0m0s  # 30 days
+              
+        # Upgrade job settings  
+        upgradejob:
+          enabled: false
+          
+        # Cleanup CRDs on uninstall
+        cleanUpCRDs: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: backup
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

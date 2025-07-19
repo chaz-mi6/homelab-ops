@@ -1,0 +1,142 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: linkerd-control-plane
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: linkerd-control-plane
+    repoURL: https://linkerd.github.io/linkerd2
+    targetRevision: 1.16.11
+    helm:
+      releaseName: linkerd-control-plane
+      values: |
+        # Control plane configuration
+        controllerImage: cr.l5d.io/linkerd/controller
+        controllerImageVersion: stable-2.14.4
+        
+        # High Availability configuration
+        controllerReplicas: 2
+        controllerUID: 2103
+        
+        # Identity configuration
+        identity:
+          issuer:
+            scheme: linkerd-identity.linkerd.cluster.local
+            clockSkewAllowance: 20s
+            issuanceLifetime: 24h0m0s
+          trustDomain: cluster.local
+          
+        # Proxy configuration
+        proxy:
+          image:
+            name: cr.l5d.io/linkerd/proxy
+            version: stable-2.14.4
+          resources:
+            cpu:
+              limit: 1000m
+              request: 100m
+            memory:
+              limit: 250Mi
+              request: 20Mi
+          logLevel: warn,linkerd=info
+          disableInboundPortsDiscovery: false
+          
+        # Proxy injector
+        proxyInjector:
+          externalSecret: true
+          caBundle: ""
+          crtPEM: ""
+          keyPEM: ""
+          
+        # Profile validator  
+        profileValidator:
+          externalSecret: true
+          caBundle: ""
+          crtPEM: ""
+          keyPEM: ""
+          
+        # Policy validator
+        policyValidator:
+          externalSecret: true
+          caBundle: ""
+          crtPEM: ""
+          keyPEM: ""
+          
+        # Destination controller
+        destinationController:
+          replicas: 2
+          
+        # Public API
+        publicAPITLS: true
+        
+        # Heartbeat
+        disableHeartBeat: false
+        heartbeatSchedule: "0 0 * * *"
+        
+        # Node selection and tolerations
+        nodeSelector:
+          kubernetes.io/os: linux
+          
+        tolerations: []
+        
+        # Pod disruption budget
+        enablePodDisruptionBudget: true
+        
+        # Monitoring
+        prometheusUrl: http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+        grafanaUrl: http://grafana.monitoring.svc.cluster.local
+        
+        # CNI configuration
+        cniEnabled: false
+        
+        # Debug configuration  
+        debugContainer:
+          image:
+            name: cr.l5d.io/linkerd/debug
+            version: stable-2.14.4
+            
+        # Extension configuration
+        extensions:
+          jaeger:
+            enabled: true
+          multicluster:
+            enabled: false
+          viz:
+            enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: linkerd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+# Linkerd CRDs Application
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: linkerd-crds
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: linkerd-crds
+    repoURL: https://linkerd.github.io/linkerd2
+    targetRevision: 1.8.0
+    helm:
+      releaseName: linkerd-crds
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: linkerd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - Replace=true

@@ -1,0 +1,198 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager-webhook
+  namespace: monitoring
+  labels:
+    app: alertmanager-webhook
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: alertmanager-webhook
+  template:
+    metadata:
+      labels:
+        app: alertmanager-webhook
+    spec:
+      serviceAccountName: alertmanager-webhook
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: webhook
+          image: prom/alertmanager:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9093
+              name: webhook
+          env:
+            - name: WEBHOOK_URL
+              value: "http://0.0.0.0:9093/webhook"
+          command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              cat > /tmp/webhook.py << 'EOF'
+              #!/usr/bin/env python3
+              import json
+              import logging
+              import sys
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              from urllib.parse import urlparse, parse_qs
+              import requests
+              
+              logging.basicConfig(level=logging.INFO)
+              logger = logging.getLogger(__name__)
+              
+              class WebhookHandler(BaseHTTPRequestHandler):
+                  def do_POST(self):
+                      if self.path == '/webhook':
+                          content_length = int(self.headers['Content-Length'])
+                          post_data = self.rfile.read(content_length)
+                          
+                          try:
+                              alert_data = json.loads(post_data.decode('utf-8'))
+                              self.process_alerts(alert_data)
+                              
+                              self.send_response(200)
+                              self.send_header('Content-type', 'application/json')
+                              self.end_headers()
+                              self.wfile.write(json.dumps({"status": "success"}).encode())
+                          except Exception as e:
+                              logger.error(f"Error processing webhook: {e}")
+                              self.send_response(500)
+                              self.end_headers()
+                      else:
+                          self.send_response(404)
+                          self.end_headers()
+                  
+                  def process_alerts(self, alert_data):
+                      logger.info(f"Received {len(alert_data.get('alerts', []))} alerts")
+                      
+                      for alert in alert_data.get('alerts', []):
+                          alert_name = alert.get('labels', {}).get('alertname', 'Unknown')
+                          status = alert.get('status', 'unknown')
+                          severity = alert.get('labels', {}).get('severity', 'info')
+                          
+                          logger.info(f"Alert: {alert_name}, Status: {status}, Severity: {severity}")
+                          
+                          # Custom processing based on alert type
+                          if severity == 'critical':
+                              self.handle_critical_alert(alert)
+                          elif alert_name == 'PodCrashLooping':
+                              self.handle_pod_restart(alert)
+                          elif 'security' in alert.get('labels', {}).get('category', '').lower():
+                              self.handle_security_alert(alert)
+                  
+                  def handle_critical_alert(self, alert):
+                      # Implement critical alert handling
+                      # e.g., create incident in external system, send SMS, etc.
+                      logger.info("Processing critical alert")
+                      
+                  def handle_pod_restart(self, alert):
+                      # Implement pod restart handling
+                      # e.g., attempt automatic remediation, scale deployment, etc.
+                      logger.info("Processing pod crash loop alert")
+                      
+                  def handle_security_alert(self, alert):
+                      # Implement security alert handling
+                      # e.g., isolate node, block IP, trigger security scan, etc.
+                      logger.info("Processing security alert")
+              
+              if __name__ == '__main__':
+                  server = HTTPServer(('0.0.0.0', 9093), WebhookHandler)
+                  logger.info("Starting webhook server on port 9093")
+                  server.serve_forever()
+              EOF
+              
+              python3 /tmp/webhook.py
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager-webhook
+  namespace: monitoring
+  labels:
+    app: alertmanager-webhook
+spec:
+  ports:
+    - port: 9093
+      targetPort: 9093
+      protocol: TCP
+      name: webhook
+  selector:
+    app: alertmanager-webhook
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alertmanager-webhook
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alertmanager-webhook
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alertmanager-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alertmanager-webhook
+subjects:
+  - kind: ServiceAccount
+    name: alertmanager-webhook
+    namespace: monitoring
+---
+# Service Monitor for webhook metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: alertmanager-webhook
+  namespace: monitoring
+  labels:
+    app: alertmanager-webhook
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: alertmanager-webhook
+  endpoints:
+    - port: webhook
+      interval: 30s
+      path: /metrics

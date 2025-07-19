@@ -1,0 +1,165 @@
+---
+# Thanos for long-term Prometheus storage
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: thanos
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: thanos
+    repoURL: https://charts.bitnami.com/bitnami
+    targetRevision: 12.20.1
+    helm:
+      releaseName: thanos
+      values: |
+        # Image configuration
+        image:
+          registry: quay.io
+          repository: thanos/thanos
+          tag: v0.32.5
+          
+        # Object store configuration (using local storage for now)
+        objstoreConfig: |
+          type: FILESYSTEM
+          config:
+            directory: /data
+            
+        # Thanos Query component
+        query:
+          enabled: true
+          replicaCount: 2
+          
+          # Service configuration
+          service:
+            type: ClusterIP
+            ports:
+              http: 9090
+              grpc: 10901
+              
+          # Ingress configuration
+          ingress:
+            enabled: true
+            ingressClassName: traefik
+            annotations:
+              traefik.ingress.kubernetes.io/router.entrypoints: websecure
+              traefik.ingress.kubernetes.io/router.tls: "true"
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+            hostname: thanos-query.homelab.local
+            tls: true
+            
+          # Resources
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "200m"
+              
+        # Thanos Query Frontend
+        queryFrontend:
+          enabled: true
+          replicaCount: 1
+          
+        # Thanos Compactor
+        compactor:
+          enabled: true
+          persistence:
+            enabled: true
+            storageClass: local-path
+            size: 50Gi
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+              
+        # Thanos Store Gateway
+        storegateway:
+          enabled: true
+          replicaCount: 1
+          persistence:
+            enabled: true
+            storageClass: local-path
+            size: 100Gi
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+              
+        # Thanos Ruler
+        ruler:
+          enabled: true
+          replicaCount: 1
+          persistence:
+            enabled: true
+            storageClass: local-path
+            size: 10Gi
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "200m"
+              
+        # Thanos Receive (for remote write)
+        receive:
+          enabled: true
+          replicaCount: 2
+          service:
+            type: ClusterIP
+            ports:
+              http: 19291
+              grpc: 10901
+              remote-write: 19291
+          persistence:
+            enabled: true
+            storageClass: local-path
+            size: 50Gi
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+              
+        # Metrics configuration
+        metrics:
+          enabled: true
+          serviceMonitor:
+            enabled: true
+            namespace: monitoring
+            
+        # Security context
+        securityContext:
+          enabled: true
+          runAsUser: 1001
+          runAsGroup: 1001
+          fsGroup: 1001
+          runAsNonRoot: true
+          
+        # Pod security context
+        podSecurityContext:
+          enabled: true
+          runAsUser: 1001
+          runAsGroup: 1001
+          fsGroup: 1001
+          runAsNonRoot: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

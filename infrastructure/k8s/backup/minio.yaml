@@ -1,0 +1,133 @@
+---
+# Minio for backup storage
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: minio
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: minio
+    repoURL: https://charts.bitnami.com/bitnami
+    targetRevision: 12.11.3
+    helm:
+      releaseName: minio
+      values: |
+        # Authentication
+        auth:
+          rootUser: admin
+          existingSecret: minio-credentials
+          
+        # Mode configuration (standalone for single instance)
+        mode: standalone
+        
+        # Persistence
+        persistence:
+          enabled: true
+          storageClass: local-path
+          size: 100Gi
+          
+        # Service configuration
+        service:
+          type: ClusterIP
+          ports:
+            api: 9000
+            console: 9001
+            
+        # Ingress for console
+        ingress:
+          enabled: true
+          ingressClassName: traefik
+          annotations:
+            traefik.ingress.kubernetes.io/router.entrypoints: websecure
+            traefik.ingress.kubernetes.io/router.tls: "true"
+            cert-manager.io/cluster-issuer: letsencrypt-prod
+          hostname: minio.homelab.local
+          path: /
+          tls: true
+          
+        # API ingress (for S3 API)
+        apiIngress:
+          enabled: true
+          ingressClassName: traefik
+          annotations:
+            traefik.ingress.kubernetes.io/router.entrypoints: websecure
+            traefik.ingress.kubernetes.io/router.tls: "true"
+            cert-manager.io/cluster-issuer: letsencrypt-prod
+          hostname: s3.homelab.local
+          path: /
+          tls: true
+          
+        # Resources
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+            
+        # Security context
+        securityContext:
+          enabled: true
+          runAsUser: 1001
+          runAsGroup: 1001
+          fsGroup: 1001
+          runAsNonRoot: true
+          
+        # Default buckets
+        defaultBuckets: "homelab-velero-backups"
+        
+        # Metrics
+        metrics:
+          enabled: true
+          serviceMonitor:
+            enabled: true
+            namespace: monitoring
+            labels:
+              release: kube-prometheus-stack
+              
+        # Provisioning
+        provisioning:
+          enabled: true
+          policies:
+            - name: velero-policy
+              statements:
+                - effect: "Allow"
+                  action:
+                    - "s3:GetBucketLocation"
+                    - "s3:ListBucket"
+                    - "s3:GetObject"
+                    - "s3:PutObject" 
+                    - "s3:DeleteObject"
+                  resource:
+                    - "arn:aws:s3:::homelab-velero-backups"
+                    - "arn:aws:s3:::homelab-velero-backups/*"
+          users:
+            - username: velero
+              existingSecret: minio-velero-user
+              existingSecretPasswordKey: password
+              policies:
+                - velero-policy
+              # Disable console access for service accounts
+              disabled: false
+              
+        # Network policies
+        networkPolicy:
+          enabled: true
+          allowExternal: true
+          
+        # Pod disruption budget
+        podDisruptionBudget:
+          create: true
+          minAvailable: 1
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: backup
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

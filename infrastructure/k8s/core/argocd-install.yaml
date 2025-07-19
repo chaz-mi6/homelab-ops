@@ -1,0 +1,134 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ArgoCD
+metadata:
+  name: argocd
+  namespace: argocd
+  labels:
+    app: argocd
+spec:
+  # High Availability Configuration
+  ha:
+    enabled: true
+    redisProxyImage: haproxy:2.8
+  
+  # Server Configuration
+  server:
+    replicas: 2
+    autoscale:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+    ingress:
+      enabled: true
+      ingressClassName: traefik
+      annotations:
+        traefik.ingress.kubernetes.io/router.entrypoints: websecure
+        traefik.ingress.kubernetes.io/router.tls: "true"
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+      hosts:
+        - argocd.shreck.co.uk
+      tls:
+        - secretName: argocd-server-tls
+          hosts:
+            - argocd.shreck.co.uk
+    
+    # SSO Configuration (OIDC)
+    config:
+      url: https://argocd.shreck.co.uk
+      oidc.config: |
+        name: Vault OIDC
+        issuer: https://vault.shreck.co.uk/v1/identity/oidc/provider/homelab
+        clientId: argocd
+        clientSecret: $oidc.vault.clientSecret
+        requestedScopes: ["openid", "profile", "email", "groups"]
+        requestedIDTokenClaims: {"groups": {"essential": true}}
+      policy.default: role:readonly
+      policy.csv: |
+        p, role:admin, applications, *, */*, allow
+        p, role:admin, clusters, *, *, allow
+        p, role:admin, repositories, *, *, allow
+        p, role:admin, certificates, *, *, allow
+        p, role:admin, accounts, *, *, allow
+        p, role:admin, gpgkeys, *, *, allow
+        p, role:admin, logs, *, *, allow
+        p, role:admin, exec, *, *, allow
+        p, role:readonly, applications, get, */*, allow
+        p, role:readonly, applications, sync, */*, allow
+        p, role:readonly, logs, get, */*, allow
+        g, argocd-admins, role:admin
+        g, argocd-users, role:readonly
+
+  # Repository Server Configuration
+  repoServer:
+    replicas: 2
+    autoscale:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+    volumes:
+      - name: custom-tools
+        emptyDir: {}
+    volumeMounts:
+      - mountPath: /custom-tools
+        name: custom-tools
+    initContainers:
+      - name: download-tools
+        image: registry.access.redhat.com/ubi8
+        env:
+          - name: AVP_VERSION
+            value: 1.16.1
+        command: [sh, -c]
+        args:
+          - >-
+            curl -L https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v$(AVP_VERSION)/argocd-vault-plugin_$(AVP_VERSION)_linux_amd64 -o argocd-vault-plugin &&
+            chmod +x argocd-vault-plugin &&
+            mv argocd-vault-plugin /custom-tools/
+        volumeMounts:
+          - mountPath: /custom-tools
+            name: custom-tools
+    env:
+      - name: ARGOCD_EXEC_TIMEOUT
+        value: "300s"
+      - name: AVP_TYPE
+        value: vault
+      - name: AVP_AUTH_TYPE
+        value: k8s
+      - name: AVP_K8S_ROLE
+        value: argocd
+      - name: VAULT_ADDR
+        value: https://vault.shreck.co.uk
+
+  # Controller Configuration
+  controller:
+    replicas: 2
+    env:
+      - name: ARGOCD_CONTROLLER_REPLICAS
+        value: "2"
+      - name: ARGOCD_CONTROLLER_SHARDING_ALGORITHM
+        value: round-robin
+
+  # Application Controller Configuration
+  applicationSet:
+    replicas: 2
+
+  # Redis Configuration for HA
+  redis:
+    image: redis:7-alpine
+    
+  # Resource Management
+  resourceCustomizations: |
+    argoproj.io/Application:
+      health.lua: |
+        hs = {}
+        hs.status = "Progressing"
+        hs.message = ""
+        if obj.status ~= nil then
+          if obj.status.health ~= nil then
+            hs.status = obj.status.health.status
+            if obj.status.health.message ~= nil then
+              hs.message = obj.status.health.message
+            end
+          end
+        end
+        return hs

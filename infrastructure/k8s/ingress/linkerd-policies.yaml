@@ -1,0 +1,172 @@
+---
+# Default deny-all network policy for linkerd namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: linkerd-control-plane-deny-all
+  namespace: linkerd
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  egress:
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow linkerd control plane communication
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: linkerd
+    ports:
+    - protocol: TCP
+      port: 8443
+    - protocol: TCP
+      port: 8086
+    - protocol: TCP
+      port: 9990
+    - protocol: TCP
+      port: 9993
+    - protocol: TCP
+      port: 9995
+  ingress:
+  # Allow linkerd control plane communication
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: linkerd
+    ports:
+    - protocol: TCP
+      port: 8443
+    - protocol: TCP
+      port: 8086
+    - protocol: TCP
+      port: 9990
+    - protocol: TCP
+      port: 9993
+    - protocol: TCP
+      port: 9995
+  # Allow monitoring scraping
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9999
+---
+# Linkerd Server Policy for mTLS enforcement
+apiVersion: policy.linkerd.io/v1beta1
+kind: Server
+metadata:
+  name: linkerd-control-plane-api
+  namespace: linkerd
+spec:
+  podSelector:
+    matchLabels:
+      linkerd.io/control-plane-component: destination
+  port: 8086
+  proxyProtocol: TLS
+---
+apiVersion: policy.linkerd.io/v1beta1
+kind: ServerAuthorization
+metadata:
+  name: linkerd-control-plane-api
+  namespace: linkerd
+spec:
+  server:
+    name: linkerd-control-plane-api
+  requiredAuthenticationRefs:
+  - name: linkerd-control-plane-identity
+    kind: ServiceAccount
+---
+# Service Account for control plane authentication
+apiVersion: policy.linkerd.io/v1beta1
+kind: MeshTLSAuthentication
+metadata:
+  name: linkerd-control-plane-identity
+  namespace: linkerd
+spec:
+  identities:
+  - "linkerd-controller.linkerd.serviceaccount.identity.linkerd.cluster.local"
+  - "linkerd-destination.linkerd.serviceaccount.identity.linkerd.cluster.local"
+  - "linkerd-identity.linkerd.serviceaccount.identity.linkerd.cluster.local"
+---
+# Traffic split for canary deployments
+apiVersion: split.smi-spec.io/v1alpha1
+kind: TrafficSplit
+metadata:
+  name: linkerd-canary-split
+  namespace: linkerd
+spec:
+  service: linkerd-destination
+  backends:
+  - service: linkerd-destination-stable
+    weight: 90
+  - service: linkerd-destination-canary
+    weight: 10
+---
+# Service profile for better observability
+apiVersion: linkerd.io/v1alpha2
+kind: ServiceProfile
+metadata:
+  name: linkerd-controller-api.linkerd.svc.cluster.local
+  namespace: linkerd
+spec:
+  routes:
+  - name: destination
+    condition:
+      method: GET
+      pathRegex: "/destination"
+    responseClasses:
+    - condition:
+        status:
+          min: 500
+          max: 599
+      isFailure: true
+    timeout: 30s
+    retryBudget:
+      retryRatio: 0.2
+      minRetriesPerSecond: 10
+      ttl: 10s
+  - name: endpoints
+    condition:
+      method: GET
+      pathRegex: "/endpoints"
+    responseClasses:
+    - condition:
+        status:
+          min: 500
+          max: 599
+      isFailure: true
+    timeout: 30s
+---
+# Circuit breaker configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: linkerd-config-overrides
+  namespace: linkerd
+  labels:
+    linkerd.io/control-plane-component: controller
+data:
+  config.yaml: |
+    proxy:
+      buffer:
+        inbound:
+          capacity: 10000
+        outbound:
+          capacity: 10000
+      discovery:
+        cache_max_idle_age: 5s
+      inbound:
+        policy:
+          default_inbound_policy: cluster-default
+      outbound:
+        policy:
+          default_outbound_policy: cluster-unauthenticated

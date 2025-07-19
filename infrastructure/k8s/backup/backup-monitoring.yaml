@@ -1,0 +1,188 @@
+---
+# Backup monitoring and alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: velero-backup-alerts
+  namespace: backup
+  labels:
+    app: velero
+    release: kube-prometheus-stack
+spec:
+  groups:
+  - name: velero.backup
+    rules:
+    - alert: VeleroBackupFailed
+      expr: increase(velero_backup_failure_total[1h]) > 0
+      for: 5m
+      labels:
+        severity: critical
+        category: backup
+        team: infrastructure
+      annotations:
+        summary: "Velero backup has failed"
+        description: "Velero backup {{ $labels.schedule }} has failed with {{ $value }} failures in the last hour"
+        runbook_url: "https://velero.io/docs/troubleshooting/"
+        
+    - alert: VeleroBackupPartialFailure
+      expr: increase(velero_backup_partial_failure_total[1h]) > 0
+      for: 5m
+      labels:
+        severity: warning
+        category: backup
+        team: infrastructure
+      annotations:
+        summary: "Velero backup completed with partial failures"
+        description: "Velero backup {{ $labels.schedule }} completed with {{ $value }} partial failures in the last hour"
+        runbook_url: "https://velero.io/docs/troubleshooting/"
+        
+    - alert: VeleroBackupMissed
+      expr: |
+        (time() - velero_backup_last_successful_timestamp) / 3600 > 25
+      for: 5m
+      labels:
+        severity: warning
+        category: backup
+        team: infrastructure
+      annotations:
+        summary: "Velero backup has not run successfully"
+        description: "Velero backup {{ $labels.schedule }} has not completed successfully in the last 25 hours"
+        runbook_url: "https://velero.io/docs/troubleshooting/"
+        
+    - alert: VeleroRestoreFailed
+      expr: increase(velero_restore_failed_total[1h]) > 0
+      for: 0m
+      labels:
+        severity: critical
+        category: backup
+        team: infrastructure
+      annotations:
+        summary: "Velero restore has failed"
+        description: "Velero restore {{ $labels.schedule }} has failed with {{ $value }} failures in the last hour"
+        runbook_url: "https://velero.io/docs/troubleshooting/"
+        
+    - alert: MinioDown
+      expr: up{job="minio"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        category: backup
+        team: infrastructure
+      annotations:
+        summary: "Minio is down"
+        description: "Minio backup storage is not responding"
+        runbook_url: "https://min.io/docs/minio/linux/operations/monitoring.html"
+        
+    - alert: MinioDiskUsageHigh
+      expr: |
+        (minio_disk_storage_used_bytes / minio_disk_storage_total_bytes) * 100 > 85
+      for: 10m
+      labels:
+        severity: warning
+        category: backup
+        team: infrastructure
+      annotations:
+        summary: "Minio disk usage is high"
+        description: "Minio disk usage is {{ $value }}% which is above the 85% threshold"
+        
+    - alert: MinioBucketSizeUnexpected
+      expr: |
+        increase(minio_bucket_usage_object_total[24h]) < -100
+      for: 1h
+      labels:
+        severity: warning
+        category: backup
+        team: infrastructure
+      annotations:
+        summary: "Unexpected decrease in Minio bucket size"
+        description: "Minio bucket {{ $labels.bucket }} has decreased by {{ $value }} objects in the last 24 hours"
+---
+# Backup job for ETCD snapshots
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-backup
+  namespace: backup
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: etcd-backup
+          hostNetwork: true
+          containers:
+          - name: etcd-backup
+            image: k8s.gcr.io/etcd:3.5.9-0
+            command:
+            - /bin/sh
+            - -c
+            - |
+              ETCDCTL_API=3 etcdctl \
+                --endpoints=https://127.0.0.1:2379 \
+                --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+                --cert=/etc/kubernetes/pki/etcd/server.crt \
+                --key=/etc/kubernetes/pki/etcd/server.key \
+                snapshot save /backup/etcd-snapshot-$(date +%Y%m%d_%H%M%S).db
+              
+              # Upload to Minio
+              mc alias set minio http://minio.backup.svc.cluster.local:9000 velero ${MINIO_PASSWORD}
+              mc cp /backup/etcd-snapshot-*.db minio/homelab-velero-backups/etcd/
+              
+              # Cleanup old local snapshots
+              find /backup -name "etcd-snapshot-*.db" -type f -mtime +7 -delete
+            env:
+            - name: MINIO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-velero-user
+                  key: password
+            volumeMounts:
+            - name: etcd-certs
+              mountPath: /etc/kubernetes/pki/etcd
+              readOnly: true
+            - name: backup-storage
+              mountPath: /backup
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "50m"
+              limits:
+                memory: "128Mi"
+                cpu: "100m"
+          volumes:
+          - name: etcd-certs
+            hostPath:
+              path: /etc/kubernetes/pki/etcd
+              type: DirectoryOrCreate
+          - name: backup-storage
+            emptyDir: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: etcd-backup
+  namespace: backup
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: etcd-backup
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: etcd-backup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: etcd-backup
+subjects:
+- kind: ServiceAccount
+  name: etcd-backup
+  namespace: backup

@@ -1,0 +1,182 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+spec:
+  project: infrastructure
+  source:
+    chart: loki
+    repoURL: https://grafana.github.io/helm-charts
+    targetRevision: 5.41.4
+    helm:
+      releaseName: loki
+      values: |
+        # Deployment mode (simple scalable for small-medium scale)
+        deploymentMode: SimpleScalable
+        
+        # Loki configuration
+        loki:
+          auth_enabled: false
+          
+          server:
+            http_listen_port: 3100
+            grpc_listen_port: 9095
+            log_level: info
+            
+          common:
+            path_prefix: /var/loki
+            replication_factor: 2
+            ring:
+              kvstore:
+                store: memberlist
+                
+          memberlist:
+            join_members:
+              - loki-memberlist
+              
+          storage_config:
+            filesystem:
+              directory: /var/loki/chunks
+              
+          schema_config:
+            configs:
+              - from: 2020-10-24
+                store: boltdb-shipper
+                object_store: filesystem
+                schema: v11
+                index:
+                  prefix: loki_index_
+                  period: 24h
+                  
+          limits_config:
+            enforce_metric_name: false
+            reject_old_samples: true
+            reject_old_samples_max_age: 168h
+            ingestion_rate_mb: 10
+            ingestion_burst_size_mb: 20
+            max_cache_freshness_per_query: 10m
+            split_queries_by_interval: 30m
+            max_query_parallelism: 16
+            max_streams_per_user: 0
+            max_global_streams_per_user: 5000
+            unordered_writes: true
+            per_stream_rate_limit: 3MB
+            per_stream_rate_limit_burst: 15MB
+            retention_period: 744h  # 31 days
+            
+          compactor:
+            working_directory: /var/loki/compactor
+            shared_store: filesystem
+            compaction_interval: 10m
+            retention_enabled: true
+            retention_delete_delay: 2h
+            retention_delete_worker_count: 150
+            
+          analytics:
+            reporting_enabled: false
+            
+        # Simple scalable mode components
+        read:
+          replicas: 2
+          persistence:
+            enabled: true
+            storageClass: local-path
+            size: 10Gi
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "300m"
+              
+        write:
+          replicas: 2
+          persistence:
+            enabled: true
+            storageClass: local-path
+            size: 20Gi
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+              
+        backend:
+          replicas: 2
+          persistence:
+            enabled: true
+            storageClass: local-path
+            size: 20Gi
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+              
+        # Gateway configuration
+        gateway:
+          enabled: true
+          replicas: 2
+          ingress:
+            enabled: true
+            ingressClassName: traefik
+            annotations:
+              traefik.ingress.kubernetes.io/router.entrypoints: websecure
+              traefik.ingress.kubernetes.io/router.tls: "true"
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+            hosts:
+              - host: loki.homelab.local
+                paths:
+                  - path: /
+                    pathType: Prefix
+            tls:
+              - secretName: loki-gateway-tls
+                hosts:
+                  - loki.homelab.local
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "100m"
+              
+        # Monitoring
+        monitoring:
+          serviceMonitor:
+            enabled: true
+            namespace: monitoring
+            labels:
+              release: kube-prometheus-stack
+              
+        # Test configuration
+        test:
+          enabled: false
+          
+        # Disable single binary mode components
+        singleBinary:
+          replicas: 0
+          
+        # Disable chunksCache
+        chunksCache:
+          enabled: false
+          
+        # Disable resultsCache
+        resultsCache:
+          enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
