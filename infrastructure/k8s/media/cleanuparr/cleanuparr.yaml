@@ -1,0 +1,221 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cleanuparr-config
+  namespace: media
+data:
+  config.yaml: |
+    settings:
+      log_level: INFO
+      dry_run: false
+      
+    sonarr:
+      url: http://sonarr:8989
+      api_key: ""  # Will be populated from external-secrets
+      
+    radarr:
+      url: http://radarr:7878
+      api_key: ""  # Will be populated from external-secrets
+      
+    cleanup:
+      rules:
+        - name: "Remove failed downloads older than 7 days"
+          type: "failed_downloads"
+          max_age_days: 7
+          
+        - name: "Remove completed downloads after 2 days if imported"
+          type: "completed_downloads"
+          max_age_days: 2
+          imported_only: true
+          
+        - name: "Clean up orphaned files"
+          type: "orphaned_files"
+          max_age_days: 30
+          
+        - name: "Remove low quality duplicates"
+          type: "quality_duplicates"
+          keep_best: true
+          
+        - name: "Clean empty folders"
+          type: "empty_folders"
+          
+      schedule:
+        daily_cleanup: "0 2 * * *"
+        weekly_deep_clean: "0 3 * * 0"
+        
+    notifications:
+      webhook_url: "http://alertmanager-webhook:9093/api/v1/alerts"
+      
+    storage:
+      min_free_space_gb: 100
+      alert_threshold_gb: 50
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cleanuparr
+  namespace: media
+  labels:
+    app: cleanuparr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cleanuparr
+  template:
+    metadata:
+      labels:
+        app: cleanuparr
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+      - name: cleanuparr
+        image: ghcr.io/rasta-mouse/cleanuparr:latest
+        env:
+        - name: TZ
+          value: "Europe/London"
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: downloads
+          mountPath: /downloads
+        - name: media
+          mountPath: /media
+        resources:
+          requests:
+            memory: 128Mi
+            cpu: 50m
+          limits:
+            memory: 512Mi
+            cpu: 200m
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: config
+        configMap:
+          name: cleanuparr-config
+      - name: downloads
+        persistentVolumeClaim:
+          claimName: downloads-pvc
+      - name: media
+        persistentVolumeClaim:
+          claimName: media-library-pvc
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanuparr-daily
+  namespace: media
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cleanuparr
+            image: ghcr.io/rasta-mouse/cleanuparr:latest
+            command: ["/app/cleanuparr"]
+            args: ["--config", "/config/config.yaml", "--mode", "daily"]
+            env:
+            - name: TZ
+              value: "Europe/London"
+            volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: downloads
+              mountPath: /downloads
+            - name: media
+              mountPath: /media
+            resources:
+              requests:
+                memory: 128Mi
+                cpu: 50m
+              limits:
+                memory: 512Mi
+                cpu: 200m
+          volumes:
+          - name: config
+            configMap:
+              name: cleanuparr-config
+          - name: downloads
+            persistentVolumeClaim:
+              claimName: downloads-pvc
+          - name: media
+            persistentVolumeClaim:
+              claimName: media-library-pvc
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanuparr-weekly
+  namespace: media
+spec:
+  schedule: "0 3 * * 0"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: cleanuparr
+            image: ghcr.io/rasta-mouse/cleanuparr:latest
+            command: ["/app/cleanuparr"]
+            args: ["--config", "/config/config.yaml", "--mode", "deep"]
+            env:
+            - name: TZ
+              value: "Europe/London"
+            volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: downloads
+              mountPath: /downloads
+            - name: media
+              mountPath: /media
+            resources:
+              requests:
+                memory: 256Mi
+                cpu: 100m
+              limits:
+                memory: 1Gi
+                cpu: 500m
+          volumes:
+          - name: config
+            configMap:
+              name: cleanuparr-config
+          - name: downloads
+            persistentVolumeClaim:
+              claimName: downloads-pvc
+          - name: media
+            persistentVolumeClaim:
+              claimName: media-library-pvc
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000

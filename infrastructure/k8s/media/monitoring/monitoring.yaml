@@ -1,0 +1,326 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: media-dashboard
+  namespace: monitoring
+data:
+  media-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Media Management Stack",
+        "tags": ["media", "homelab"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Download Statistics",
+            "type": "stat",
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+            "targets": [
+              {
+                "expr": "rate(sonarr_downloads_total[5m])",
+                "legendFormat": "Sonarr Downloads/min"
+              },
+              {
+                "expr": "rate(radarr_downloads_total[5m])",
+                "legendFormat": "Radarr Downloads/min"
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "title": "Storage Usage",
+            "type": "piechart",
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+            "targets": [
+              {
+                "expr": "node_filesystem_size_bytes{mountpoint=\"/media\"}",
+                "legendFormat": "Total Space"
+              },
+              {
+                "expr": "node_filesystem_avail_bytes{mountpoint=\"/media\"}",
+                "legendFormat": "Available Space"
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "title": "Application Health",
+            "type": "table",
+            "gridPos": {"h": 6, "w": 24, "x": 0, "y": 8},
+            "targets": [
+              {
+                "expr": "up{job=~\"sonarr|radarr|prowlarr|transmission|plex\"}",
+                "format": "table",
+                "instant": true
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "title": "Download Queue",
+            "type": "graph",
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+            "targets": [
+              {
+                "expr": "transmission_queue_size",
+                "legendFormat": "Queue Size"
+              },
+              {
+                "expr": "transmission_active_downloads",
+                "legendFormat": "Active Downloads"
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "title": "Plex Transcoding",
+            "type": "graph",
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+            "targets": [
+              {
+                "expr": "plex_transcode_sessions",
+                "legendFormat": "Transcode Sessions"
+              },
+              {
+                "expr": "plex_direct_play_sessions",
+                "legendFormat": "Direct Play Sessions"
+              }
+            ]
+          }
+        ],
+        "time": {"from": "now-1h", "to": "now"},
+        "refresh": "30s"
+      }
+    }
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: sonarr-metrics
+  namespace: media
+  labels:
+    app: sonarr
+spec:
+  selector:
+    matchLabels:
+      app: sonarr
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: radarr-metrics
+  namespace: media
+  labels:
+    app: radarr
+spec:
+  selector:
+    matchLabels:
+      app: radarr
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: prowlarr-metrics
+  namespace: media
+  labels:
+    app: prowlarr
+spec:
+  selector:
+    matchLabels:
+      app: prowlarr
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: transmission-metrics
+  namespace: media
+  labels:
+    app: transmission-vpn
+spec:
+  selector:
+    matchLabels:
+      app: transmission-vpn
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: plex-metrics
+  namespace: media
+  labels:
+    app: plex
+spec:
+  selector:
+    matchLabels:
+      app: plex
+  endpoints:
+  - port: plex-web
+    path: /metrics
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: media-alerts
+  namespace: media
+spec:
+  groups:
+  - name: media.rules
+    rules:
+    - alert: MediaAppDown
+      expr: up{job=~"sonarr|radarr|prowlarr|transmission|plex"} == 0
+      for: 5m
+      labels:
+        severity: critical
+        service: "{{ $labels.job }}"
+      annotations:
+        summary: "Media application {{ $labels.job }} is down"
+        description: "{{ $labels.job }} has been down for more than 5 minutes."
+        
+    - alert: MediaStorageLow
+      expr: (node_filesystem_avail_bytes{mountpoint="/media"} / node_filesystem_size_bytes{mountpoint="/media"}) * 100 < 10
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Media storage is running low"
+        description: "Media storage has less than 10% free space remaining."
+        
+    - alert: DownloadsStorageLow
+      expr: (node_filesystem_avail_bytes{mountpoint="/downloads"} / node_filesystem_size_bytes{mountpoint="/downloads"}) * 100 < 5
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Downloads storage is critically low"
+        description: "Downloads storage has less than 5% free space remaining."
+        
+    - alert: TransmissionQueueStuck
+      expr: transmission_queue_size > 10 and rate(transmission_completed_downloads[30m]) == 0
+      for: 30m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Transmission download queue appears stuck"
+        description: "Transmission has {{ $value }} items in queue but no completed downloads in 30 minutes."
+        
+    - alert: PlexTranscodingOverload
+      expr: plex_transcode_sessions > 5
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Plex is handling many transcoding sessions"
+        description: "Plex is currently transcoding {{ $value }} streams simultaneously."
+        
+    - alert: MediaBackupFailed
+      expr: increase(failed_backup_jobs_total{job="media-backup"}[24h]) > 0
+      for: 1h
+      labels:
+        severity: critical
+      annotations:
+        summary: "Media backup job failed"
+        description: "Media configuration backup has failed {{ $value }} times in the last 24 hours."
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: media-exporter
+  namespace: media
+  labels:
+    app: media-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: media-exporter
+  template:
+    metadata:
+      labels:
+        app: media-exporter
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+      containers:
+      - name: media-exporter
+        image: ghcr.io/onedr0p/exportarr:latest
+        args:
+        - sonarr
+        - radarr
+        - prowlarr
+        env:
+        - name: PORT
+          value: "9707"
+        - name: URL
+          value: "http://sonarr:8989,http://radarr:7878,http://prowlarr:9696"
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: media-api-keys
+              key: combined-key
+        ports:
+        - containerPort: 9707
+          name: metrics
+        resources:
+          requests:
+            memory: 64Mi
+            cpu: 25m
+          limits:
+            memory: 256Mi
+            cpu: 100m
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: media-exporter
+  namespace: media
+  labels:
+    app: media-exporter
+spec:
+  selector:
+    app: media-exporter
+  ports:
+  - port: 9707
+    targetPort: 9707
+    name: metrics
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: media-exporter
+  namespace: media
+spec:
+  selector:
+    matchLabels:
+      app: media-exporter
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s

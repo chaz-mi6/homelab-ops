@@ -1,0 +1,184 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: radarr-config
+  namespace: media
+data:
+  RADARR__INSTANCENAME: "Radarr"
+  RADARR__BRANCH: "master"
+  RADARR__APIKEY: "placeholder-will-be-generated"
+  RADARR__AUTHENTICATION__METHOD: "External"
+  RADARR__AUTHENTICATION__REQUIRED: "Enabled"
+  RADARR__LOG__LEVEL: "info"
+  RADARR__UPDATE__MECHANISM: "Docker"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: radarr-config-pvc
+  namespace: media
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: radarr
+  namespace: media
+  labels:
+    app: radarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: radarr
+  template:
+    metadata:
+      labels:
+        app: radarr
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+      - name: radarr
+        image: ghcr.io/linuxserver/radarr:latest
+        ports:
+        - containerPort: 7878
+          name: http
+        env:
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        - name: TZ
+          value: "Europe/London"
+        envFrom:
+        - configMapRef:
+            name: radarr-config
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: movies
+          mountPath: /movies
+          subPath: movies
+        - name: downloads
+          mountPath: /downloads
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 2Gi
+            cpu: 1000m
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 7878
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 7878
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: radarr-config-pvc
+      - name: movies
+        persistentVolumeClaim:
+          claimName: media-library-pvc
+      - name: downloads
+        persistentVolumeClaim:
+          claimName: downloads-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: radarr
+  namespace: media
+  labels:
+    app: radarr
+spec:
+  selector:
+    app: radarr
+  ports:
+  - port: 7878
+    targetPort: 7878
+    protocol: TCP
+    name: http
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: radarr-ingress
+  namespace: media
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - radarr.shreck.co.uk
+    secretName: radarr-tls
+  rules:
+  - host: radarr.shreck.co.uk
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: radarr
+            port:
+              number: 7878
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: radarr-hpa
+  namespace: media
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: radarr
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

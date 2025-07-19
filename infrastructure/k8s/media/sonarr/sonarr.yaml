@@ -1,0 +1,184 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sonarr-config
+  namespace: media
+data:
+  SONARR__INSTANCENAME: "Sonarr"
+  SONARR__BRANCH: "main"
+  SONARR__APIKEY: "placeholder-will-be-generated"
+  SONARR__AUTHENTICATION__METHOD: "External"
+  SONARR__AUTHENTICATION__REQUIRED: "Enabled"
+  SONARR__LOG__LEVEL: "info"
+  SONARR__UPDATE__MECHANISM: "Docker"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sonarr-config-pvc
+  namespace: media
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sonarr
+  namespace: media
+  labels:
+    app: sonarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sonarr
+  template:
+    metadata:
+      labels:
+        app: sonarr
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+      - name: sonarr
+        image: ghcr.io/linuxserver/sonarr:latest
+        ports:
+        - containerPort: 8989
+          name: http
+        env:
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        - name: TZ
+          value: "Europe/London"
+        envFrom:
+        - configMapRef:
+            name: sonarr-config
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: tv
+          mountPath: /tv
+          subPath: tv
+        - name: downloads
+          mountPath: /downloads
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 2Gi
+            cpu: 1000m
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8989
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8989
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: sonarr-config-pvc
+      - name: tv
+        persistentVolumeClaim:
+          claimName: media-library-pvc
+      - name: downloads
+        persistentVolumeClaim:
+          claimName: downloads-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonarr
+  namespace: media
+  labels:
+    app: sonarr
+spec:
+  selector:
+    app: sonarr
+  ports:
+  - port: 8989
+    targetPort: 8989
+    protocol: TCP
+    name: http
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sonarr-ingress
+  namespace: media
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - sonarr.shreck.co.uk
+    secretName: sonarr-tls
+  rules:
+  - host: sonarr.shreck.co.uk
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: sonarr
+            port:
+              number: 8989
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sonarr-hpa
+  namespace: media
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sonarr
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

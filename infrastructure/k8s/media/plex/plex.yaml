@@ -1,0 +1,300 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: plex-config
+  namespace: media
+data:
+  PLEX_CLAIM: "claim-placeholder"  # Will be populated from external-secrets
+  PLEX_UID: "1000"
+  PLEX_GID: "1000"
+  TZ: "Europe/London"
+  ADVERTISE_IP: "https://plex.shreck.co.uk:443"
+  ALLOWED_NETWORKS: "10.0.0.0/8,192.168.0.0/16,172.16.0.0/12"
+  CHANGE_CONFIG_DIR_OWNERSHIP: "false"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-config-pvc
+  namespace: media
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plex-transcode-pvc
+  namespace: media
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: plex
+  namespace: media
+  labels:
+    app: plex
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: plex
+  template:
+    metadata:
+      labels:
+        app: plex
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+      - name: plex
+        image: ghcr.io/linuxserver/plex:latest
+        ports:
+        - containerPort: 32400
+          name: plex-web
+        - containerPort: 1900
+          name: dlna-udp
+          protocol: UDP
+        - containerPort: 3005
+          name: plex-home
+        - containerPort: 5353
+          name: bonjour-udp
+          protocol: UDP
+        - containerPort: 8324
+          name: roku
+        - containerPort: 32410
+          name: gdm-1
+          protocol: UDP
+        - containerPort: 32412
+          name: gdm-2
+          protocol: UDP
+        - containerPort: 32413
+          name: gdm-3
+          protocol: UDP
+        - containerPort: 32414
+          name: gdm-4
+          protocol: UDP
+        - containerPort: 32469
+          name: dlna-tcp
+        env:
+        - name: VERSION
+          value: "docker"
+        envFrom:
+        - configMapRef:
+            name: plex-config
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: transcode
+          mountPath: /transcode
+        - name: movies
+          mountPath: /movies
+          subPath: movies
+          readOnly: true
+        - name: tv
+          mountPath: /tv
+          subPath: tv
+          readOnly: true
+        - name: music
+          mountPath: /music
+          subPath: music
+          readOnly: true
+        - name: photos
+          mountPath: /photos
+          subPath: photos
+          readOnly: true
+        - name: dev-dri
+          mountPath: /dev/dri
+          readOnly: false
+        resources:
+          requests:
+            memory: 2Gi
+            cpu: 1000m
+            gpu.intel.com/i915: 1
+          limits:
+            memory: 8Gi
+            cpu: 4000m
+            gpu.intel.com/i915: 1
+        livenessProbe:
+          httpGet:
+            path: /web/index.html
+            port: 32400
+            scheme: HTTP
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            path: /web/index.html
+            port: 32400
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - CHOWN
+            - SETUID
+            - SETGID
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: plex-config-pvc
+      - name: transcode
+        persistentVolumeClaim:
+          claimName: plex-transcode-pvc
+      - name: movies
+        persistentVolumeClaim:
+          claimName: media-library-pvc
+      - name: tv
+        persistentVolumeClaim:
+          claimName: media-library-pvc
+      - name: music
+        persistentVolumeClaim:
+          claimName: media-library-pvc
+      - name: photos
+        persistentVolumeClaim:
+          claimName: media-library-pvc
+      - name: dev-dri
+        hostPath:
+          path: /dev/dri
+          type: Directory
+      nodeSelector:
+        intel.feature.node.kubernetes.io/gpu: "true"
+      tolerations:
+      - key: "gpu"
+        operator: "Equal"
+        value: "intel"
+        effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex
+  namespace: media
+  labels:
+    app: plex
+spec:
+  selector:
+    app: plex
+  ports:
+  - port: 32400
+    targetPort: 32400
+    protocol: TCP
+    name: plex-web
+  - port: 1900
+    targetPort: 1900
+    protocol: UDP
+    name: dlna-udp
+  - port: 3005
+    targetPort: 3005
+    protocol: TCP
+    name: plex-home
+  - port: 5353
+    targetPort: 5353
+    protocol: UDP
+    name: bonjour-udp
+  - port: 8324
+    targetPort: 8324
+    protocol: TCP
+    name: roku
+  - port: 32410
+    targetPort: 32410
+    protocol: UDP
+    name: gdm-1
+  - port: 32412
+    targetPort: 32412
+    protocol: UDP
+    name: gdm-2
+  - port: 32413
+    targetPort: 32413
+    protocol: UDP
+    name: gdm-3
+  - port: 32414
+    targetPort: 32414
+    protocol: UDP
+    name: gdm-4
+  - port: 32469
+    targetPort: 32469
+    protocol: TCP
+    name: dlna-tcp
+  type: LoadBalancer
+  loadBalancerIP: 10.30.0.220
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: plex-ingress
+  namespace: media
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/service.passhostheader: "true"
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - plex.shreck.co.uk
+    secretName: plex-tls
+  rules:
+  - host: plex.shreck.co.uk
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: plex
+            port:
+              number: 32400
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: plex-hpa
+  namespace: media
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: plex
+  minReplicas: 1
+  maxReplicas: 1  # Plex doesn't support clustering
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 85
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 90

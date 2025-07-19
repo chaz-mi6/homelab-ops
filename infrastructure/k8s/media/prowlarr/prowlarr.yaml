@@ -1,0 +1,180 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prowlarr-config
+  namespace: media
+data:
+  PROWLARR__INSTANCENAME: "Prowlarr"
+  PROWLARR__BRANCH: "master"
+  PROWLARR__APIKEY: "placeholder-will-be-generated"
+  PROWLARR__AUTHENTICATION__METHOD: "External"
+  PROWLARR__AUTHENTICATION__REQUIRED: "Enabled"
+  PROWLARR__LOG__LEVEL: "info"
+  PROWLARR__UPDATE__MECHANISM: "Docker"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prowlarr-config-pvc
+  namespace: media
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prowlarr
+  namespace: media
+  labels:
+    app: prowlarr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prowlarr
+  template:
+    metadata:
+      labels:
+        app: prowlarr
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+      - name: prowlarr
+        image: ghcr.io/linuxserver/prowlarr:latest
+        ports:
+        - containerPort: 9696
+          name: http
+        env:
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        - name: TZ
+          value: "Europe/London"
+        envFrom:
+        - configMapRef:
+            name: prowlarr-config
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 150m
+          limits:
+            memory: 1Gi
+            cpu: 500m
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 9696
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 9696
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: config
+        persistentVolumeClaim:
+          claimName: prowlarr-config-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prowlarr
+  namespace: media
+  labels:
+    app: prowlarr
+spec:
+  selector:
+    app: prowlarr
+  ports:
+  - port: 9696
+    targetPort: 9696
+    protocol: TCP
+    name: http
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prowlarr-ingress
+  namespace: media
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - prowlarr.shreck.co.uk
+    secretName: prowlarr-tls
+  rules:
+  - host: prowlarr.shreck.co.uk
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: prowlarr
+            port:
+              number: 9696
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: prowlarr-health-check
+  namespace: media
+spec:
+  schedule: "*/15 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: health-checker
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Check Prowlarr health endpoint
+              curl -f http://prowlarr:9696/ping || exit 1
+              # Check indexer sync status
+              curl -f -H "X-Api-Key: $PROWLARR_API_KEY" http://prowlarr:9696/api/v1/health || exit 1
+            env:
+            - name: PROWLARR_API_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: prowlarr-config
+                  key: PROWLARR__APIKEY
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
