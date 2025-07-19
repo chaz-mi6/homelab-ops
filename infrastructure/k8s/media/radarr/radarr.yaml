@@ -69,7 +69,6 @@ spec:
           mountPath: /config
         - name: movies
           mountPath: /movies
-          subPath: movies
         - name: downloads
           mountPath: /downloads
         resources:
@@ -110,10 +109,10 @@ spec:
           claimName: radarr-config-pvc
       - name: movies
         persistentVolumeClaim:
-          claimName: media-library-pvc
+          claimName: media-movies-pvc
       - name: downloads
         persistentVolumeClaim:
-          claimName: downloads-pvc
+          claimName: media-downloads-pvc
 ---
 apiVersion: v1
 kind: Service

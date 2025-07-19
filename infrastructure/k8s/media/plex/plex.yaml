@@ -104,19 +104,12 @@ spec:
           mountPath: /transcode
         - name: movies
           mountPath: /movies
-          subPath: movies
           readOnly: true
         - name: tv
           mountPath: /tv
-          subPath: tv
           readOnly: true
         - name: music
           mountPath: /music
-          subPath: music
-          readOnly: true
-        - name: photos
-          mountPath: /photos
-          subPath: photos
           readOnly: true
         - name: dev-dri
           mountPath: /dev/dri
@@ -171,16 +164,13 @@ spec:
           claimName: plex-transcode-pvc
       - name: movies
         persistentVolumeClaim:
-          claimName: media-library-pvc
+          claimName: media-movies-pvc
       - name: tv
         persistentVolumeClaim:
-          claimName: media-library-pvc
+          claimName: media-tv-pvc
       - name: music
         persistentVolumeClaim:
-          claimName: media-library-pvc
-      - name: photos
-        persistentVolumeClaim:
-          claimName: media-library-pvc
+          claimName: media-music-pvc
       - name: dev-dri
         hostPath:
           path: /dev/dri

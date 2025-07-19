@@ -225,7 +225,7 @@ spec:
           claimName: transmission-config-pvc
       - name: downloads
         persistentVolumeClaim:
-          claimName: downloads-pvc
+          claimName: media-downloads-pvc
       - name: transmission-settings
         configMap:
           name: transmission-config

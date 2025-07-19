@@ -1,28 +1,127 @@
 ---
 apiVersion: v1
-kind: PersistentVolumeClaim
+kind: PersistentVolume
 metadata:
-  name: media-library-pvc
-  namespace: media
+  name: media-tv-pv
+  labels:
+    type: nfs-fast-ssd
 spec:
+  capacity:
+    storage: 200Gi
   accessModes:
   - ReadWriteMany
-  storageClassName: longhorn
-  resources:
-    requests:
-      storage: 500Gi  # Start with 500GB, expandable with Longhorn
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-fast-ssd
+  nfs:
+    server: 10.10.0.178  # Proxmox host IP
+    path: /fast-ssd/media/tv
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: downloads-pvc
+  name: media-tv-pvc
   namespace: media
 spec:
   accessModes:
   - ReadWriteMany
-  storageClassName: longhorn
+  storageClassName: nfs-fast-ssd
   resources:
     requests:
-      storage: 200Gi  # Start with 200GB for downloads
-# Using existing Longhorn storage classes
-# No additional storage classes needed
+      storage: 200Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: media-movies-pv
+  labels:
+    type: nfs-fast-ssd
+spec:
+  capacity:
+    storage: 200Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-fast-ssd
+  nfs:
+    server: 10.10.0.178
+    path: /fast-ssd/media/movies
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-movies-pvc
+  namespace: media
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: nfs-fast-ssd
+  resources:
+    requests:
+      storage: 200Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: media-downloads-pv
+  labels:
+    type: nfs-fast-ssd
+spec:
+  capacity:
+    storage: 80Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-fast-ssd
+  nfs:
+    server: 10.10.0.178
+    path: /fast-ssd/media/downloads
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-downloads-pvc
+  namespace: media
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: nfs-fast-ssd
+  resources:
+    requests:
+      storage: 80Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: media-music-pv
+  labels:
+    type: nfs-fast-ssd
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-fast-ssd
+  nfs:
+    server: 10.10.0.178
+    path: /fast-ssd/media/music
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-music-pvc
+  namespace: media
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: nfs-fast-ssd
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: nfs-fast-ssd
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
