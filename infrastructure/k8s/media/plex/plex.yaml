@@ -21,7 +21,7 @@ metadata:
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: fast-ssd
+  storageClassName: longhorn
   resources:
     requests:
       storage: 50Gi
@@ -34,7 +34,7 @@ metadata:
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: fast-ssd
+  storageClassName: longhorn
   resources:
     requests:
       storage: 100Gi

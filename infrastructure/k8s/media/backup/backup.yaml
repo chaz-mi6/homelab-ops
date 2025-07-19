@@ -229,7 +229,7 @@ metadata:
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: fast-ssd
+  storageClassName: longhorn
   resources:
     requests:
       storage: 10Gi
